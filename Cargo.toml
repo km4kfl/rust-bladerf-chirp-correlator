@@ -1,0 +1,11 @@
+[package]
+name = "rust-bladerf-chirp-correlator"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+bladerf = { git = "https://github.com/km4kfl/rust-bladerf" }
+num-complex = "0.4.6"
+num-traits = "0.2.19"
+byteorder = "1.5.0"
+rustfft = "6.2.0"
