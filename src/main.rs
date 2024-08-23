@@ -126,6 +126,24 @@ fn mul_sf64_scalar(a: &[f64], b: f64) -> Vec<f64> {
     out
 }
 
+fn div_iqf64_scalar_inplace(a: &mut [Complex<f64>], b: f64) {
+    for v in a.iter_mut() {
+        *v /= b;
+    }
+}
+
+fn max_iqf64(a: &[Complex<f64>]) -> f64 {
+    let mut mag_max = 0.0f64;
+    for v in a.iter() {
+        let mag = f64::sqrt(v.norm_sqr());
+        if mag > mag_max {
+            mag_max = mag;
+        }
+    }
+
+    mag_max
+}
+
 fn fftfreq(sz: usize) -> Vec<f64> {
     let mut out: Vec<f64> = Vec::with_capacity(sz);
     let spacing = 1.0 / sz as f64;
@@ -250,7 +268,9 @@ impl FftCorrelate {
         );
 
         for x in 0..valid {
-            out.push(ap[(adj + x) % ap.len()]);
+            out.push(
+                ap[(adj + x) % ap.len()] / ap.len() as f64
+            );
         }
         
         out
@@ -266,10 +286,22 @@ fn main() {
         dev.fw_version().expect("should have returned firmware version")
     );
 
-    let freq = 1_830_000_000u64;
+    // The center frequency in hertz.
+    let freq = 5_000_000_000u64;
+    // The samples per second.
     let sps = 520834u32;
-    //let sps = 4_000_000u32;
-    //let sps = 61_440_000u32;
+    // The size of the chirp in samples.
+    let samps: usize = 60000;
+    // The chirp start frequency.
+    let freq_start = 30e3f64;
+    // The chirp end frequency.
+    let freq_end = 100e3f64;
+    // The number of scan points. This is the number of points at which
+    // the chirp correlation is evaluated. The more the further the distance
+    // and greater the time.
+    let sample_distance = 200usize;
+    // The speed of light or some fraction of it if you desire.
+    let wave_velocity = 299792458.0f64;
 
     dev.set_frequency(bladerf::bladerf_module::RX0, freq).expect(
         "should have set the RX frequency"
@@ -321,12 +353,8 @@ fn main() {
         "tx0 module enable"
     );
 
-    let samps: usize = 130208;
     let mut signal: Vec<Complex<f64>> = vec!(Complex::<f64> { re: 0.0f64, im: 0.0f64 }; samps);
     let mut tx_data: Vec<Complex<i16>> = vec!(Complex::<i16> { re: 0i16, im: 0i16 }; samps);
-
-    let freq_start = 10e3f64;
-    let freq_end = 100e3f64;
     let theta_step_start = freq_start * std::f64::consts::PI * 2.0f64 / (sps as f64);
     let theta_step_end = freq_end * std::f64::consts::PI * 2.0f64 / (sps as f64);
     let t_space = linspace(theta_step_start, theta_step_end, samps as u32);
@@ -342,15 +370,14 @@ fn main() {
         }
     }
 
-    let sample_distance = 1000usize;
+    let sample_distance_mul = 1;
 
     let mut signal_slots: Vec<Vec<Complex<f64>>> = Vec::new();
-    let wave_velocity = 299792458.0f64;
     let distance_per_sample = wave_velocity / sps as f64;
 
-    for x in 0..sample_distance {
+    for x in 0..sample_distance / sample_distance_mul {
         println!("building cor {:}", x);
-        let distance = distance_per_sample * x as f64;
+        let distance = distance_per_sample * sample_distance_mul as f64 * x as f64;
         let mut signal_shifted = phase_shift_signal_by_distance(
             sps as f64,
             freq as f64,
@@ -404,11 +431,13 @@ fn main() {
 
     let correlate = FftCorrelate::new(rx_data.len(), samps);
 
-    for x in 0..1000000 {
+    loop {
         // clear the buffer
         dev_arc.sync_rx(&mut rx_trash, None, 20000).expect("rx sync call [trash]");
         dev_arc.sync_rx(&mut rx_data, None, 20000).expect("rx sync call [data]");
         convert_iqi16_to_iqf64(&rx_data, &mut rx_signal);
+
+        div_iqf64_scalar_inplace(&mut rx_signal, 2896.309);
 
         println!("processing");
 
@@ -425,30 +454,25 @@ fn main() {
             }
         }
 
-        if best_mag < 79_323_227_631_870.28 {
-            println!("mag too low");
-            continue;
-        }
+        //if best_mag < 700.0f64 || best_mag > 800.0f64 {
+        //    println!("mag too low {:}", best_mag);
+        //    continue;
+        //}
 
         println!("best_ndx:{:} best_mag:{:}", best_ndx, best_mag);
 
-        for i in 0..signal_slots.len() {
-            let ss = &signal_slots[i];
+        fout_buffer.seek(SeekFrom::Start(0)).expect("seeking into buffer");
+        fout_buffer.write_f64::<LittleEndian>(best_mag).expect("encoding f64 into bytes");
+        fout.write(fout_buffer.get_ref()).expect("writing magnitude to file");
+
+        for i in 0..sample_distance {
+            let ss = &signal_slots[i / sample_distance_mul];
             let mag = f64::sqrt(multiply_slice_offset_wrapping_sum(
                 &ss, &rx_signal, best_ndx + i
             ).norm_sqr());
             fout_buffer.seek(SeekFrom::Start(0)).expect("seeking into buffer");
             fout_buffer.write_f64::<LittleEndian>(mag).expect("encoding f64 into bytes");
             fout.write(fout_buffer.get_ref()).expect("writing magnitude to file");                
-        }
-
-        if x % 5 == 4 {
-            let elapsed = st.elapsed();
-            let seconds = elapsed.as_secs() as f64 + (elapsed.subsec_micros() as f64 / 1000000.0);
-            let total_samps = seconds * sps as f64;
-            if total_samps > x as f64 * samps as f64 {
-                println!("WARNING: RX running too slow; losing samples");
-            }
         }
     }
 
