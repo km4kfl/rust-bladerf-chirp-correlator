@@ -12,6 +12,8 @@ from scipy import ndimage
 def main(args):
     samps = args.points
 
+    print('loading')
+
     x = 0
     g = []
     with open(args.data, 'rb') as fd:
@@ -19,54 +21,48 @@ def main(args):
         print(fd.tell())
         fd.seek(0)
         while True:
-            data = fd.read((samps + 1) * 8)
+            data = fd.read(samps * 8)
             try:
-                v = np.ndarray(samps, np.float64, data)
+                v = np.ndarray(samps * 2, np.float32, data)
             except TypeError:
                 break
             v = np.array(v)
-            best_mag = v[0]
-            print(best_mag)
-            if best_mag > args.mag_threshold:
-                v = v[1:]
-                g.append(v)
+            g.append(v[0::2])
             x += 1
     
+    print('processing')
+
     g = np.array(g)
 
+
+    g = g[40:, :]
+
+    print('normalizing')
+    for y in range(g.shape[0]):
+        v = g[y, :]
+        delta = (np.max(v) - np.min(v))
+        if delta > 0:
+            v = (v - np.min(v)) / delta
+        g[y, :] = v
+    
+    print('subtracting column average')
     gm = np.mean(g, axis=0)
     g -= gm
 
-    g0 = ndimage.gaussian_filter(g, (args.gy, args.gx))
+    #g = np.abs(g) ** 0.1
 
-    g = g0
+    print('doing gaussian filter')
+    g = ndimage.gaussian_filter(g, (args.gy, args.gx))
 
-    g = (g - np.min(g)) / (np.max(g) - np.min(g))
+    #gm = np.mean(g, axis=0)
+    #g -= gm
 
-    h = []
-    for y in range(g.shape[0]):
-        if g[y, 0] < args.post_threshold:
-            h.append(g[y, :])
-    g = np.array(h)
-
+    print('plotting')
     sol = 299792458
 
     d = sol / args.sps * g.shape[1] * 0.5
 
-    h = []
-    for y in range(g.shape[0]):
-        hs = []
-        for x in range(g.shape[1] - 1):
-            v = g[y, x + 1] - g[y, x]
-            if v > 0.0:
-                hs.append(v)
-            else:
-                hs.append(v) #np.nan)
-        h.append(hs)
-    
-    g = np.array(h)
-
-    plt.title('Phased Compensated Correlation Over Time')
+    plt.title('Correlation')
     plt.ylabel('time')
     plt.xlabel('approx. meters')
     plt.imshow(g, aspect='auto', extent=(0, d, g.shape[0], 0), cmap='rainbow')
