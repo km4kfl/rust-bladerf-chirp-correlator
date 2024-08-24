@@ -101,6 +101,9 @@ fn sum_slice(a: &[Complex<f64>]) -> Complex<f64> {
     out
 }
 
+/// Convert a slice of Complex<i16> to Complex<f64>. 
+///
+/// This does not scale the values.
 fn convert_iqi16_to_iqf64(a: &[Complex<i16>], out: &mut [Complex<f64>]) {
     for (av, out_v) in a.iter().zip(out.iter_mut()) {
         (*out_v).re = av.re as f64;
@@ -108,6 +111,7 @@ fn convert_iqi16_to_iqf64(a: &[Complex<i16>], out: &mut [Complex<f64>]) {
     }
 }
 
+/// Add the slice of complex values to the scalar and return a new vector with the output.
 fn add_sf64_scalar(a: &[f64], b: f64) -> Vec<f64> {
     let mut out: Vec<f64> = Vec::with_capacity(a.len());
     for v in a.iter() {
@@ -117,6 +121,7 @@ fn add_sf64_scalar(a: &[f64], b: f64) -> Vec<f64> {
     out
 }
 
+/// Multiply the slice of complex values by the scalar.
 fn mul_sf64_scalar(a: &[f64], b: f64) -> Vec<f64> {
     let mut out: Vec<f64> = Vec::with_capacity(a.len());
     for v in a.iter() {
@@ -126,12 +131,14 @@ fn mul_sf64_scalar(a: &[f64], b: f64) -> Vec<f64> {
     out
 }
 
+/// Divide the slice of complex values by the scalar.
 fn div_iqf64_scalar_inplace(a: &mut [Complex<f64>], b: f64) {
     for v in a.iter_mut() {
         *v /= b;
     }
 }
 
+/// Return the maximum magnitude along the slice of complex values.
 fn max_iqf64(a: &[Complex<f64>]) -> f64 {
     let mut mag_max = 0.0f64;
     for v in a.iter() {
@@ -144,6 +151,7 @@ fn max_iqf64(a: &[Complex<f64>]) -> f64 {
     mag_max
 }
 
+/// Return the frequency bin centers for rustfft's FFT.
 fn fftfreq(sz: usize) -> Vec<f64> {
     let mut out: Vec<f64> = Vec::with_capacity(sz);
     let spacing = 1.0 / sz as f64;
@@ -175,6 +183,10 @@ fn fftfreq(sz: usize) -> Vec<f64> {
     out
 }
 
+/// Shifts the signal components by a phase that is a function of distance and frequency.
+///
+/// As a signal travels it's individual frequency components change as a function of distance
+/// and this function tries to estimate that change based on frequency and distance.
 fn phase_shift_signal_by_distance(
     sps: f64,
     center_freq: f64,
@@ -205,6 +217,9 @@ fn phase_shift_signal_by_distance(
     signal
 }
 
+/// Performs an FFT correlation. Equivalent to scipy.signal.correlate(a, b, mode='same').
+///
+/// Wraps the `rustfft` planner and transforms to reduce run-time for a constant size input.
 struct FftCorrelate {
     fft_size: usize,
     planner: rustfft::FftPlanner<f64>,
@@ -214,7 +229,7 @@ struct FftCorrelate {
 
 impl FftCorrelate {
     fn new(a_size: usize, b_size: usize) -> FftCorrelate {
-        let fft_size = a_size + b_size + 1;
+        let fft_size = a_size + b_size+ 1;
         let mut planner = rustfft::FftPlanner::new();
         let forward = planner.plan_fft(fft_size, rustfft::FftDirection::Forward);
         let inverse = planner.plan_fft(fft_size, rustfft::FftDirection::Inverse);
@@ -432,20 +447,23 @@ fn main() {
     let correlate = FftCorrelate::new(rx_data.len(), samps);
 
     loop {
-        // clear the buffer
+        // Clear the buffer.
         dev_arc.sync_rx(&mut rx_trash, None, 20000).expect("rx sync call [trash]");
         dev_arc.sync_rx(&mut rx_data, None, 20000).expect("rx sync call [data]");
+        // Convert the 16-bit signed complex to 64-bit floating point complex.
         convert_iqi16_to_iqf64(&rx_data, &mut rx_signal);
-
+        // Scale it down so the correlation sums don't get larger than needed.
         div_iqf64_scalar_inplace(&mut rx_signal, 2896.309);
 
         println!("processing");
 
+        // This does an FFT based correlation. Python: scipy.signal.correlate(rx_signal, signal, mode='same').
         let initial_cor = correlate.correlate(&rx_signal, &signal);
 
+        // The highest peak *should* be the initial TX chirp signal and everything
+        // after should be the reflections. Find this initial index.
         let mut best_mag = 0f64;
         let mut best_ndx = 0usize;
-
         for i in 0..initial_cor.len() {
             let mag = f64::sqrt(initial_cor[i].norm_sqr());
             if mag > best_mag {
@@ -454,22 +472,31 @@ fn main() {
             }
         }
 
+        // The Python program handles this now so it is commented out.
         //if best_mag < 700.0f64 || best_mag > 800.0f64 {
         //    println!("mag too low {:}", best_mag);
         //    continue;
         //}
 
+        // By watching this output you can get an idea of what the FFT correlation
+        // magnitudes are. They directly relate to the overall SNR. You want a
+        // high valued `best_mag`.
         println!("best_ndx:{:} best_mag:{:}", best_ndx, best_mag);
 
+        // Write best_mag to the file.
         fout_buffer.seek(SeekFrom::Start(0)).expect("seeking into buffer");
         fout_buffer.write_f64::<LittleEndian>(best_mag).expect("encoding f64 into bytes");
         fout.write(fout_buffer.get_ref()).expect("writing magnitude to file");
 
         for i in 0..sample_distance {
             let ss = &signal_slots[i / sample_distance_mul];
+            // I couldn't use an FFT correlation here because what I'm correlating with changes
+            // at each position. I'm not sure if an FFT correlation would still be faster for 
+            // just a single output value?
             let mag = f64::sqrt(multiply_slice_offset_wrapping_sum(
                 &ss, &rx_signal, best_ndx + i
             ).norm_sqr());
+            // Write the value to the file.
             fout_buffer.seek(SeekFrom::Start(0)).expect("seeking into buffer");
             fout_buffer.write_f64::<LittleEndian>(mag).expect("encoding f64 into bytes");
             fout.write(fout_buffer.get_ref()).expect("writing magnitude to file");                

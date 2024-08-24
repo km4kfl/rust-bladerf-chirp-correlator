@@ -53,10 +53,23 @@ def main(args):
 
     d = sol / args.sps * g.shape[1] * 0.5
 
+    h = []
+    for y in range(g.shape[0]):
+        hs = []
+        for x in range(g.shape[1] - 1):
+            v = g[y, x + 1] - g[y, x]
+            if v > 0.0:
+                hs.append(v)
+            else:
+                hs.append(v) #np.nan)
+        h.append(hs)
+    
+    g = np.array(h)
+
     plt.title('Phased Compensated Correlation Over Time')
     plt.ylabel('time')
     plt.xlabel('approx. meters')
-    plt.imshow(g, aspect='auto', extent=(0, d, g.shape[0], 0))
+    plt.imshow(g, aspect='auto', extent=(0, d, g.shape[0], 0), cmap='rainbow')
     plt.show()
 
     plt.plot(g[:, 0])
