@@ -21,38 +21,48 @@ def main(args):
         print(fd.tell())
         fd.seek(0)
         while True:
-            data = fd.read(samps * 8)
+            data = fd.read(samps * 4)
             try:
-                v = np.ndarray(samps * 2, np.float32, data)
+                v = np.ndarray(samps, np.float32, data)
             except TypeError:
                 break
             v = np.array(v)
-            g.append(v[0::2])
+            print(v)
+            g.append(v)
             x += 1
-    
-    print('processing')
 
     g = np.array(g)
 
+    #g = g[2:, :]
 
-    g = g[40:, :]
+    #g = g[28::32, :]
+    
+    #plt.scatter(np.linspace(0, g.shape[0], g.shape[0]), g[:, 0])
+    #plt.show()
 
-    print('normalizing')
+    #plt.imshow(g)
+    #plt.show()
+    #exit()
+    
+    print('processing')
+
+    h = []
+
     for y in range(g.shape[0]):
         v = g[y, :]
-        delta = (np.max(v) - np.min(v))
-        if delta > 0:
-            v = (v - np.min(v)) / delta
-        g[y, :] = v
+        v = v[1:] - v[:-1]
+        h.append(v)
+
+    g = np.array(h)
     
     print('subtracting column average')
-    gm = np.mean(g, axis=0)
-    g -= gm
+    #gm = np.mean(g, axis=0)
+    #g -= gm
 
     #g = np.abs(g) ** 0.1
 
     print('doing gaussian filter')
-    g = ndimage.gaussian_filter(g, (args.gy, args.gx))
+    #g = ndimage.gaussian_filter(g, (args.gy, args.gx))
 
     #gm = np.mean(g, axis=0)
     #g -= gm
