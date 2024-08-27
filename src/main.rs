@@ -6,10 +6,11 @@ use std::thread;
 use num_complex::Complex;
 use std::sync::mpsc::channel;
 use std::time::{Instant, Duration};
-use std::fs::File;
+use std::fs::{OpenOptions, File};
 use byteorder::{LittleEndian, WriteBytesExt};
 use std::io::{Cursor, Write, Seek, SeekFrom};
 use rustfft;
+use rand::prelude::*;
 
 fn dft(x: &[Complex<f64>], out: &mut [Complex<f64>]) {
     let imm_step = -((2.0 * std::f64::consts::PI) / x.len() as f64);
@@ -417,8 +418,6 @@ fn main() {
         dev.fw_version().expect("should have returned firmware version")
     );
 
-    // The center frequency in hertz.
-    let freq = 2_000_000_000u64;
     // The samples per second.
     //let sps = 520834u32;
     let sps = 4_000_000u32;
@@ -435,10 +434,10 @@ fn main() {
     // The speed of light or some fraction of it if you desire.
     let wave_velocity = 299792458.0f64;
 
-    dev.set_frequency(bladerf::bladerf_module::RX0, freq).expect(
+    dev.set_frequency(bladerf::bladerf_module::RX0, 4_000_000_000).expect(
         "should have set the RX frequency"
     );
-    dev.set_frequency(bladerf::bladerf_module::TX0, freq).expect(
+    dev.set_frequency(bladerf::bladerf_module::TX0, 4_000_000_000).expect(
         "should have set the TX frequency"
     );
 
@@ -463,7 +462,7 @@ fn main() {
     let num_buffers = 16u32;
     let buffer_size = 4096u32;
     let num_transfers = 8u32;
-    let stream_timeout = 20u32;
+    let stream_timeout = 20000u32;
 
     let buffer_samps = num_buffers * buffer_size / 4;
 
@@ -487,7 +486,7 @@ fn main() {
         "rx0 module enable"
     );
 
-    thread::sleep(Duration::from_micros(200));
+    //thread::sleep(Duration::from_micros(200));
 
     dev.enable_module(bladerf::bladerf_module::TX0, true).expect(
         "tx0 module enable"
@@ -509,26 +508,6 @@ fn main() {
             theta += t_space[x];
             theta = theta % (std::f32::consts::PI * 2.0);
         }
-    }
-
-    let sample_distance_mul = 1;
-
-    let mut signal_slots: Vec<Vec<Complex<f32>>> = Vec::new();
-    let distance_per_sample = wave_velocity / sps as f64;
-
-    for x in 0..sample_distance / sample_distance_mul {
-        println!("building cor {:}", x);
-        let distance = distance_per_sample * sample_distance_mul as f64 * x as f64;
-        let mut signal_shifted = phase_shift_signal_by_distance(
-            sps as f64,
-            freq as f64,
-            &signal,
-            distance,
-            wave_velocity
-        );
-        //let mut signal_shifted = signal.clone();
-        conjugate_slice32(&mut signal_shifted);
-        signal_slots.push(signal_shifted);
     }
     
     let dev_arc = Arc::new(dev);
@@ -566,6 +545,8 @@ fn main() {
         }
     });
 
+    //tx_handler.join().expect("joined tx thread");
+
     let mut rx_data = vec!(
         Complex::<i16> { re: 0i16, im: 0i16 };
         samps * 2
@@ -588,6 +569,8 @@ fn main() {
     let st = Instant::now();
 
     let mut fout = File::create("out.bin").expect("opening output file");
+    //let mut fout = OpenOptions::new().write(true).open("out.bin").expect("opening output file");
+
     let mut fout_buffer = Cursor::new(vec!(0u8; 4));
 
     let correlate = FftCorrelate32::new(rx_data.len(), samps);
@@ -604,98 +587,133 @@ fn main() {
     let avg_buf_lines = 32;
     let mut avg_buf = vec!(0f32; sample_distance * avg_buf_lines);
 
+    let mut rng = rand::thread_rng();
+
+    let freq_start = 800e6f64;
+    let freq_end = 6000e6f64;
+
     loop {
-        // Clear the buffer.
-        let mut meta = bladerf::Struct_bladerf_metadata::default();
-        meta.flags = bladerf::bladerf_meta_rx::FLAG_RX_NOW as u32;
-        //dev_arc.sync_rx_meta(&mut rx_trash, &mut meta.clone(), 20000).expect("rx sync call [trash]");        
-        dev_arc.sync_rx_meta(&mut rx_data, &mut meta, 20000).expect("rx sync call [data]");
-
-        // Calculate the offset of the first chirp in the buffer. I'm assuming the RX and TX use the
-        // same sample counter in the FPGA.
-        let best_ndx = samps - ((meta.timestamp - initial_timestamp) % samps as u64) as usize;
-
-        //println!("rx:timestamp:{:} actual_count:{:} best_ndx:{:}", meta.timestamp, meta.actual_count, best_ndx);
-
-        // Convert the 16-bit signed complex to 64-bit floating point complex.
-        convert_iqi16_to_iqf32(&rx_data, &mut rx_signal);
-        // Scale it down so the correlation sums don't get larger than needed.
-        div_iqf32_scalar_inplace(&mut rx_signal, 2896.309);
-
-        {
-            let max = max_iq_slice(&rx_signal);
-            let mut avg = 0.0f32;
-            for v in rx_signal.iter() {
-                avg += f32::sqrt(v.norm_sqr());
-            }
-            avg /= rx_data.len() as f32;
-            println!("rx_data peak:{:} avg:{:}", max, avg);
-        }        
-
-        // This was the OLD way. Now, we use the timestamp to synchronize the RX and TX.
+        let freq = 3_611_697_000.0f64; //rng.gen::<f64>() * (freq_end - freq_start) + freq_start;
         
-        // This does an FFT based correlation. Python: scipy.signal.correlate(rx_signal, signal, mode='same').
-        let initial_cor = correlate.correlate(&rx_signal, &signal);
+        dev_arc.set_frequency(bladerf::bladerf_module::RX0, freq as u64).expect(
+            "should have set the RX frequency"
+        );
+        dev_arc.set_frequency(bladerf::bladerf_module::TX0, freq as u64).expect(
+            "should have set the TX frequency"
+        );
 
-        // The highest peak *should* be the initial TX chirp signal and everything
-        // after should be the reflections. Find this initial index.
-        let mut n_best_mag = 0f32;
-        let mut n_best_ndx = 0usize;
-        for i in 0..initial_cor.len() {
-            let mag = f32::sqrt(initial_cor[i].norm_sqr());
-            if mag > n_best_mag {
-                n_best_mag = mag;
-                n_best_ndx = i;
-            }
-        }
+        println!("set frequency {:}", freq);
 
-        {
-            let diff = best_ndx as isize - n_best_ndx as isize;
-            avg_diff += diff as f64;
-            avg_diff_cnt += 1.0;
-            println!("processing best_ndx:{:} n_best_ndx:{:} diff:{:}", best_ndx, n_best_ndx, avg_diff / avg_diff_cnt);
-        }
-
-        /*
-        // The Python program handles this now so it is commented out.
-        //if best_mag < 700.0f64 || best_mag > 800.0f64 {
-        //    println!("mag too low {:}", best_mag);
-        //    continue;
-        //}
-
-        // By watching this output you can get an idea of what the FFT correlation
-        // magnitudes are. They directly relate to the overall SNR. You want a
-        // high valued `best_mag`.
-        println!("best_ndx:{:} best_mag:{:}", best_ndx, best_mag);
-
-        // Write best_mag to the file.
-        fout_buffer.seek(SeekFrom::Start(0)).expect("seeking into buffer");
-        fout_buffer.write_f32::<LittleEndian>(best_mag).expect("encoding f64 into bytes");
-        fout.write(fout_buffer.get_ref()).expect("writing magnitude to file");
-        */
-
-        for i in 0..sample_distance {
-            let ss = &signal_slots[i / sample_distance_mul];
-            
-            // This is slower than the direct method.
-            //let mag = f64::sqrt(small_correlate.correlate(&rx_signal[best_ndx+i..best_ndx+i+samps], &ss)[0].norm_sqr());
-
-            let sample = multiply_slice_offset_wrapping_sum::<f32>(
-                &ss, &rx_signal, best_ndx + i
+        let mut signal_slots: Vec<Vec<Complex<f32>>> = Vec::new();
+        let distance_per_sample = wave_velocity / sps as f64;
+    
+        for x in 0..sample_distance {
+            //println!("building cor {:}", x);
+            let distance = distance_per_sample * x as f64;
+            let mut signal_shifted = phase_shift_signal_by_distance(
+                sps as f64,
+                freq as f64,
+                &signal,
+                distance,
+                wave_velocity
             );
-            let mag = f32::sqrt(sample.norm_sqr());
-            let theta = sample.arg();
-
-            if i == 0 {
-                println!("mag[0]:{:}", mag);
-            }
-
-            let line = cycle % 20;
-            avg_buf[sample_distance * line + i] = mag;
+            //let mut signal_shifted = signal.clone();
+            conjugate_slice32(&mut signal_shifted);
+            signal_slots.push(signal_shifted);
         }
 
-        if cycle % avg_buf_lines == avg_buf_lines - 1 {
+        loop {
+            let mut rx_datas: Vec<(usize, Vec<Complex<i16>>)> = Vec::new();
+
+            for cycle in 0..avg_buf_lines {
+                // Clear the buffer.
+                let mut meta;
+                
+                meta = bladerf::Struct_bladerf_metadata::default();
+                meta.flags = bladerf::bladerf_meta_rx::FLAG_RX_NOW as u32;
+                dev_arc.sync_rx_meta(&mut rx_trash, &mut meta, 20000).expect("rx sync call [trash]");
+
+                meta = bladerf::Struct_bladerf_metadata::default();
+                meta.flags = bladerf::bladerf_meta_rx::FLAG_RX_NOW as u32;
+                dev_arc.sync_rx_meta(&mut rx_data, &mut meta, 20000).expect("rx sync call [data]");
+
+                // Calculate the offset of the first chirp in the buffer. I'm assuming the RX and TX use the
+                // same sample counter in the FPGA.
+                let best_ndx = samps - ((meta.timestamp - initial_timestamp) % samps as u64) as usize;
+
+                rx_datas.push((best_ndx, rx_data.clone()));
+            }
+
+            println!("rx_datas.len():{:}", rx_datas.len());
+
+            for cycle in 0..avg_buf_lines {
+                //println!("rx:timestamp:{:} actual_count:{:} best_ndx:{:}", meta.timestamp, meta.actual_count, best_ndx);
+                let best_ndx = rx_datas[cycle].0;
+
+                // Convert the 16-bit signed complex to 64-bit floating point complex.
+                convert_iqi16_to_iqf32(&rx_datas[cycle].1, &mut rx_signal);
+                // Scale it down so the correlation sums don't get larger than needed.
+                div_iqf32_scalar_inplace(&mut rx_signal, 2896.309);
+
+                {
+                    let max = max_iq_slice(&rx_signal);
+                    let mut avg = 0.0f32;
+                    for v in rx_signal.iter() {
+                        avg += f32::sqrt(v.norm_sqr());
+                    }
+                    avg /= rx_data.len() as f32;
+                    //println!("rx_data peak:{:} avg:{:}", max, avg);
+                }        
+
+                // This was the OLD way. Now, we use the timestamp to synchronize the RX and TX.
+                
+                // This does an FFT based correlation. Python: scipy.signal.correlate(rx_signal, signal, mode='same').
+                let initial_cor = correlate.correlate(&rx_signal, &signal);
+
+                // The highest peak *should* be the initial TX chirp signal and everything
+                // after should be the reflections. Find this initial index.
+                let mut n_best_mag = 0f32;
+                let mut n_best_ndx = 0usize;
+                for i in 0..initial_cor.len() {
+                    let mag = f32::sqrt(initial_cor[i].norm_sqr());
+                    if mag > n_best_mag {
+                        n_best_mag = mag;
+                        n_best_ndx = i;
+                    }
+                }
+
+                {
+                    let diff = best_ndx as isize - n_best_ndx as isize;
+                    avg_diff += diff as f64;
+                    avg_diff_cnt += 1.0;
+                    //println!("processing best_ndx:{:} n_best_ndx:{:} diff:{:}", best_ndx, n_best_ndx, avg_diff / avg_diff_cnt);
+                }
+
+                for i in 0..sample_distance {
+                    let ss = &signal_slots[i];
+                    
+                    // This is slower than the direct method.
+                    //let mag = f64::sqrt(small_correlate.correlate(&rx_signal[best_ndx+i..best_ndx+i+samps], &ss)[0].norm_sqr());
+
+                    let sample = multiply_slice_offset_wrapping_sum::<f32>(
+                        &ss, &rx_signal, best_ndx + i
+                    );
+                    let mag = f32::sqrt(sample.norm_sqr());
+                    let theta = sample.arg();
+
+                    if i == 0 {
+                        println!("mag[0]:{:}", mag);
+                    }
+
+                    avg_buf[sample_distance * cycle + i] = mag;
+                }
+            }
+
             println!("writing to file");
+            fout_buffer.seek(SeekFrom::Start(0)).expect("seeking into buffer");
+            fout_buffer.write_f32::<LittleEndian>((freq / 1e3) as f32).expect("encoding f64 into bytes");
+            fout.write(fout_buffer.get_ref()).expect("writing magnitude to file");
+
             for i in 0..sample_distance {
                 let mut avg = 0f32;
                 for y in 0..avg_buf_lines {
@@ -705,11 +723,9 @@ fn main() {
                 // Write the value to the file.
                 fout_buffer.seek(SeekFrom::Start(0)).expect("seeking into buffer");
                 fout_buffer.write_f32::<LittleEndian>(avg).expect("encoding f64 into bytes");
-                fout.write(fout_buffer.get_ref()).expect("writing magnitude to file");                                
+                fout.write(fout_buffer.get_ref()).expect("writing magnitude to file");
             }
         }
-
-        cycle += 1;
     }
 
     rx_tx.send(true).expect("tried sending tx thread shutdown command");

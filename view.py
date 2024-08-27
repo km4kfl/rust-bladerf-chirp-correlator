@@ -21,15 +21,19 @@ def main(args):
         print(fd.tell())
         fd.seek(0)
         while True:
-            data = fd.read(samps * 4)
+            data = fd.read((samps + 1) * 4)
             try:
                 v = np.ndarray(samps, np.float32, data)
             except TypeError:
                 break
             v = np.array(v)
-            print(v)
-            g.append(v)
+            g.append((v[0], v[1:]))
+            print(v[0])
             x += 1
+
+    #g.sort(key=lambda i: i[0])
+    f = [v[0] for v in g]
+    g = [v[1] for v in g]
 
     g = np.array(g)
 
@@ -46,16 +50,16 @@ def main(args):
     
     print('processing')
 
-    h = []
+    #h = []
+    #for y in range(g.shape[0]):
+    #    v = g[y, :]
+    #    v = v[1:] - v[:-1]
+    #    h.append(v)
+    #g = np.array(h)
 
-    for y in range(g.shape[0]):
-        v = g[y, :]
-        v = v[1:] - v[:-1]
-        h.append(v)
-
-    g = np.array(h)
+    #g[g < 0] = np.nan
     
-    print('subtracting column average')
+    #print('subtracting column average')
     #gm = np.mean(g, axis=0)
     #g -= gm
 
@@ -76,6 +80,7 @@ def main(args):
     plt.ylabel('time')
     plt.xlabel('approx. meters')
     plt.imshow(g, aspect='auto', extent=(0, d, g.shape[0], 0), cmap='rainbow')
+    #plt.imshow(g, aspect='auto', cmap='rainbow')
     plt.show()
 
     plt.plot(g[:, 0])
