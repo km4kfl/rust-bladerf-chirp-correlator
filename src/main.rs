@@ -11,6 +11,7 @@ use byteorder::{LittleEndian, WriteBytesExt};
 use std::io::{Cursor, Write, Seek, SeekFrom};
 use rustfft;
 use rand::prelude::*;
+use sigrs::*;
 
 fn dft(x: &[Complex<f64>], out: &mut [Complex<f64>]) {
     let imm_step = -((2.0 * std::f64::consts::PI) / x.len() as f64);
@@ -40,36 +41,6 @@ fn idft(x: &[Complex<f64>], out: &mut [Complex<f64>]) {
             out[n] += imm * x[k];            
         }
     }
-}
-
-fn linspace64(start: f64, end: f64, steps: u32) -> Vec<f64> {
-    let mut out: Vec<f64> = vec!(0.0f64; steps as usize);
-    let delta = end - start;
-    
-    let mut step = 0u32;
-    for out_v in out.iter_mut() {
-        let p = (step as f64) / (steps as f64 - 1.0);
-        let cur = start + p * delta;
-        *out_v = cur;
-        step += 1;
-    }
-
-    out
-}
-
-fn linspace32(start: f32, end: f32, steps: u32) -> Vec<f32> {
-    let mut out: Vec<f32> = vec!(0.0f32; steps as usize);
-    let delta = end - start;
-    
-    let mut step = 0u32;
-    for out_v in out.iter_mut() {
-        let p = (step as f32) / (steps as f32 - 1.0);
-        let cur = start + p * delta;
-        *out_v = cur;
-        step += 1;
-    }
-
-    out
 }
 
 fn roll_slice_left(a: &mut [Complex<f64>]) {
@@ -134,23 +105,6 @@ fn sum_iq_slice<T: Default + num_traits::Float + std::ops::AddAssign>(a: &[Compl
     }
 
     out
-}
-
-/// Convert a slice of Complex<i16> to Complex<f64>. 
-///
-/// This does not scale the values.
-fn convert_iqi16_to_iqf64(a: &[Complex<i16>], out: &mut [Complex<f64>]) {
-    for (av, out_v) in a.iter().zip(out.iter_mut()) {
-        (*out_v).re = av.re as f64;
-        (*out_v).im = av.im as f64;
-    }
-}
-
-fn convert_iqi16_to_iqf32(a: &[Complex<i16>], out: &mut [Complex<f32>]) {
-    for (av, out_v) in a.iter().zip(out.iter_mut()) {
-        (*out_v).re = av.re as f32;
-        (*out_v).im = av.im as f32;
-    }
 }
 
 /// Add the slice of complex values to the scalar and return a new vector with the output.
@@ -261,153 +215,6 @@ fn phase_shift_signal_by_distance(
     signal
 }
 
-/// Performs an FFT correlation. Equivalent to scipy.signal.correlate(a, b, mode='same').
-///
-/// Wraps the `rustfft` planner and transforms to reduce run-time for a constant size input.
-struct FftCorrelate32 {
-    fft_size: usize,
-    planner: rustfft::FftPlanner<f32>,
-    forward: Arc<dyn rustfft::Fft<f32>>,
-    inverse: Arc<dyn rustfft::Fft<f32>>,
-}
-
-impl FftCorrelate32 {
-    fn new(a_size: usize, b_size: usize) -> FftCorrelate32 {
-        let fft_size = a_size + b_size+ 1;
-        let mut planner = rustfft::FftPlanner::new();
-        let forward = planner.plan_fft(fft_size, rustfft::FftDirection::Forward);
-        let inverse = planner.plan_fft(fft_size, rustfft::FftDirection::Inverse);
-        FftCorrelate32 {
-            fft_size: fft_size,
-            planner: planner,
-            forward: forward,
-            inverse: inverse,
-        }
-    }
-
-    fn correlate(
-        &self, 
-        a: &[Complex<f32>],
-        b: &[Complex<f32>]) -> Vec<Complex<f32>>
-    {
-        let mut ap = vec!(
-            Complex::<f32> {
-                re: 0.0, im: 0.0 
-            }; self.fft_size
-        );
-        
-        let mut bp = vec!(
-            Complex::<f32> {
-                re: 0.0, im: 0.0
-            }; self.fft_size
-        );
-
-        for (avv, av) in ap.iter_mut().zip(a.iter()) {
-            *avv = *av;
-        }
-
-        for (bvv, bv) in bp.iter_mut().zip(b.iter()) {
-            *bvv = *bv;
-        }
-
-        self.forward.process(&mut ap);
-        self.forward.process(&mut bp);
-
-        for (av, bv) in ap.iter_mut().zip(bp.iter()) {
-            *av = *av * bv.conj();
-        }
-
-        self.inverse.process(&mut ap);
-        
-        let adj = (b.len() - 1) * 2;
-        let valid = a.len() - b.len() + 1;
-
-        let mut out: Vec<Complex<f32>> = Vec::with_capacity(
-            valid
-        );
-
-        for x in 0..valid {
-            out.push(
-                ap[(adj + x) % ap.len()] / ap.len() as f32
-            );
-        }
-        
-        out
-    }
-}
-
-struct FftCorrelate64 {
-    fft_size: usize,
-    planner: rustfft::FftPlanner<f64>,
-    forward: Arc<dyn rustfft::Fft<f64>>,
-    inverse: Arc<dyn rustfft::Fft<f64>>,
-}
-
-impl FftCorrelate64 {
-    fn new(a_size: usize, b_size: usize) -> FftCorrelate64 {
-        let fft_size = a_size + b_size+ 1;
-        let mut planner = rustfft::FftPlanner::new();
-        let forward = planner.plan_fft(fft_size, rustfft::FftDirection::Forward);
-        let inverse = planner.plan_fft(fft_size, rustfft::FftDirection::Inverse);
-        FftCorrelate64 {
-            fft_size: fft_size,
-            planner: planner,
-            forward: forward,
-            inverse: inverse,
-        }
-    }
-
-    fn correlate(
-        &self, 
-        a: &[Complex<f64>],
-        b: &[Complex<f64>]) -> Vec<Complex<f64>>
-    {
-        let mut ap = vec!(
-            Complex::<f64> {
-                re: 0.0, im: 0.0 
-            }; self.fft_size
-        );
-        
-        let mut bp = vec!(
-            Complex::<f64> {
-                re: 0.0, im: 0.0
-            }; self.fft_size
-        );
-
-        for (avv, av) in ap.iter_mut().zip(a.iter()) {
-            *avv = *av;
-        }
-
-        for (bvv, bv) in bp.iter_mut().zip(b.iter()) {
-            *bvv = *bv;
-        }
-
-        self.forward.process(&mut ap);
-        self.forward.process(&mut bp);
-
-        for (av, bv) in ap.iter_mut().zip(bp.iter()) {
-            *av = *av * bv.conj();
-        }
-
-        self.inverse.process(&mut ap);
-        
-        let adj = (b.len() - 1) * 2;
-        let valid = a.len() - b.len() + 1;
-
-        let mut out: Vec<Complex<f64>> = Vec::with_capacity(
-            valid
-        );
-
-        for x in 0..valid {
-            out.push(
-                ap[(adj + x) % ap.len()] / ap.len() as f64
-            );
-        }
-        
-        out
-    }
-}
-
 
 fn main() {
     println!("opening bladerf..");
@@ -424,13 +231,14 @@ fn main() {
     // The size of the chirp in samples.
     let samps: usize = 1024 * 16;
     // The chirp start frequency.
-    let freq_start = 200e3f32;
+    let freq_start = 5e3f32;
     // The chirp end frequency.
-    let freq_end = 240e3f32;
+    let freq_end = 45e3f32;
+    let bw = 100_000u32;
     // The number of scan points. This is the number of points at which
     // the chirp correlation is evaluated. The more the further the distance
     // and greater the time.
-    let sample_distance = 400usize;
+    let sample_distance = 2000usize;
     // The speed of light or some fraction of it if you desire.
     let wave_velocity = 299792458.0f64;
 
@@ -441,21 +249,21 @@ fn main() {
         "should have set the TX frequency"
     );
 
-    dev.set_gain(bladerf::bladerf_module::TX0, 20).expect("TX0 gain set");
+    dev.set_gain(bladerf::bladerf_module::TX0, 60).expect("TX0 gain set");
     dev.set_gain(bladerf::bladerf_module::TX1, 0).expect("TX1 gain set");
     dev.set_gain(bladerf::bladerf_module::RX0, 60).expect("RX0 gain set");
     dev.set_gain(bladerf::bladerf_module::RX1, 0).expect("RX1 gain set");
 
-    dev.set_bandwidth(bladerf::bladerf_module::TX0, sps).expect("TX0 bw set");
-    dev.set_bandwidth(bladerf::bladerf_module::TX1, sps).expect("TX1 bw set");
-    dev.set_bandwidth(bladerf::bladerf_module::RX0, sps).expect("RX0 bw set");
-    dev.set_bandwidth(bladerf::bladerf_module::RX1, sps).expect("RX1 bw set");
+    dev.set_bandwidth(bladerf::bladerf_module::TX0, bw).expect("TX0 bw set");
+    dev.set_bandwidth(bladerf::bladerf_module::TX1, bw).expect("TX1 bw set");
+    dev.set_bandwidth(bladerf::bladerf_module::RX0, bw).expect("RX0 bw set");
+    dev.set_bandwidth(bladerf::bladerf_module::RX1, bw).expect("RX1 bw set");
 
-    dev.set_sample_rate(bladerf::bladerf_module::RX0, 520834).expect(
+    dev.set_sample_rate(bladerf::bladerf_module::RX0, sps).expect(
         "RX0/RX1 sampling rate set"
     );
 
-    dev.set_sample_rate(bladerf::bladerf_module::TX0, 520834).expect(
+    dev.set_sample_rate(bladerf::bladerf_module::TX0, sps).expect(
         "TX0/TX1 sampling rate set"
     );
 
@@ -585,7 +393,7 @@ fn main() {
     let mut cycle = 0usize;
 
     let avg_buf_lines = 32;
-    let mut avg_buf = vec!(0f32; sample_distance * avg_buf_lines);
+    let mut avg_buf = vec!(Complex::<f32> { re: 0.0, im: 0.0 }; sample_distance * avg_buf_lines);
 
     let mut rng = rand::thread_rng();
 
@@ -625,17 +433,24 @@ fn main() {
         loop {
             let mut rx_datas: Vec<(usize, Vec<Complex<i16>>)> = Vec::new();
 
-            for cycle in 0..avg_buf_lines {
+            while rx_datas.len() < avg_buf_lines {
                 // Clear the buffer.
                 let mut meta;
                 
-                meta = bladerf::Struct_bladerf_metadata::default();
+                /*meta = bladerf::Struct_bladerf_metadata::default();
                 meta.flags = bladerf::bladerf_meta_rx::FLAG_RX_NOW as u32;
                 dev_arc.sync_rx_meta(&mut rx_trash, &mut meta, 20000).expect("rx sync call [trash]");
+                */
 
                 meta = bladerf::Struct_bladerf_metadata::default();
                 meta.flags = bladerf::bladerf_meta_rx::FLAG_RX_NOW as u32;
                 dev_arc.sync_rx_meta(&mut rx_data, &mut meta, 20000).expect("rx sync call [data]");
+
+                if meta.actual_count as usize != rx_data.len() {
+                    continue;
+                }
+
+                println!("actual:{:} exp:{:}", meta.actual_count, rx_data.len());
 
                 // Calculate the offset of the first chirp in the buffer. I'm assuming the RX and TX use the
                 // same sample counter in the FPGA.
@@ -698,14 +513,14 @@ fn main() {
                     let sample = multiply_slice_offset_wrapping_sum::<f32>(
                         &ss, &rx_signal, best_ndx + i
                     );
-                    let mag = f32::sqrt(sample.norm_sqr());
-                    let theta = sample.arg();
+                    //let mag = f32::sqrt(sample.norm_sqr());
+                    //let theta = sample.arg();
 
-                    if i == 0 {
-                        println!("mag[0]:{:}", mag);
-                    }
+                    //if i == 0 {
+                    //    println!("mag[0]:{:}", mag);
+                    //}
 
-                    avg_buf[sample_distance * cycle + i] = mag;
+                    avg_buf[sample_distance * cycle + i] = sample;
                 }
             }
 
@@ -715,14 +530,17 @@ fn main() {
             fout.write(fout_buffer.get_ref()).expect("writing magnitude to file");
 
             for i in 0..sample_distance {
-                let mut avg = 0f32;
+                let mut avg = Complex::<f32> { re: 0.0, im: 0.0 };
                 for y in 0..avg_buf_lines {
                     avg += avg_buf[sample_distance * y + i];
                 }
                 avg /= avg_buf_lines as f32;
                 // Write the value to the file.
                 fout_buffer.seek(SeekFrom::Start(0)).expect("seeking into buffer");
-                fout_buffer.write_f32::<LittleEndian>(avg).expect("encoding f64 into bytes");
+                fout_buffer.write_f32::<LittleEndian>(avg.re).expect("encoding f64 into bytes");
+                fout.write(fout_buffer.get_ref()).expect("writing magnitude to file");
+                fout_buffer.seek(SeekFrom::Start(0)).expect("seeking into buffer");
+                fout_buffer.write_f32::<LittleEndian>(avg.im).expect("encoding f64 into bytes");
                 fout.write(fout_buffer.get_ref()).expect("writing magnitude to file");
             }
         }

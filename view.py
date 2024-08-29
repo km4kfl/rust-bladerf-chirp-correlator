@@ -21,21 +21,18 @@ def main(args):
         print(fd.tell())
         fd.seek(0)
         while True:
-            data = fd.read((samps + 1) * 4)
+            data = fd.read((samps * 2 + 1) * 4)
             try:
-                v = np.ndarray(samps, np.float32, data)
+                v = np.ndarray(samps, np.complex64, data[4:])
             except TypeError:
                 break
             v = np.array(v)
-            g.append((v[0], v[1:]))
-            print(v[0])
+            g.append(v)
             x += 1
 
-    #g.sort(key=lambda i: i[0])
-    f = [v[0] for v in g]
-    g = [v[1] for v in g]
-
     g = np.array(g)
+
+    g = g[2:, :]
 
     #g = g[2:, :]
 
@@ -58,7 +55,9 @@ def main(args):
     #g = np.array(h)
 
     #g[g < 0] = np.nan
-    
+
+    g = np.abs(g)
+
     #print('subtracting column average')
     #gm = np.mean(g, axis=0)
     #g -= gm
@@ -66,10 +65,11 @@ def main(args):
     #g = np.abs(g) ** 0.1
 
     print('doing gaussian filter')
-    #g = ndimage.gaussian_filter(g, (args.gy, args.gx))
 
-    #gm = np.mean(g, axis=0)
-    #g -= gm
+    gm = np.mean(g, axis=0)
+    g -= gm
+
+    g = ndimage.gaussian_filter(g, (args.gy, args.gx))
 
     print('plotting')
     sol = 299792458
