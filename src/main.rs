@@ -227,18 +227,18 @@ fn main() {
 
     // The samples per second.
     //let sps = 520834u32;
-    let sps = 4_000_000u32;
+    let sps = 8_000_000u32;
     // The size of the chirp in samples.
     let samps: usize = 1024 * 16;
     // The chirp start frequency.
-    let freq_start = 5e3f32;
+    let freq_start = -95e3f32;
     // The chirp end frequency.
-    let freq_end = 45e3f32;
-    let bw = 100_000u32;
+    let freq_end = 95e3f32;
+    let bw = 200_000u32;
     // The number of scan points. This is the number of points at which
     // the chirp correlation is evaluated. The more the further the distance
     // and greater the time.
-    let sample_distance = 2000usize;
+    let sample_distance = 500usize;
     // The speed of light or some fraction of it if you desire.
     let wave_velocity = 299792458.0f64;
 
@@ -401,7 +401,7 @@ fn main() {
     let freq_end = 6000e6f64;
 
     loop {
-        let freq = 3_611_697_000.0f64; //rng.gen::<f64>() * (freq_end - freq_start) + freq_start;
+        let freq = 450_697_000.0f64; //rng.gen::<f64>() * (freq_end - freq_start) + freq_start;
         
         dev_arc.set_frequency(bladerf::bladerf_module::RX0, freq as u64).expect(
             "should have set the RX frequency"
@@ -418,14 +418,14 @@ fn main() {
         for x in 0..sample_distance {
             //println!("building cor {:}", x);
             let distance = distance_per_sample * x as f64;
-            let mut signal_shifted = phase_shift_signal_by_distance(
+            /*let mut signal_shifted = phase_shift_signal_by_distance(
                 sps as f64,
                 freq as f64,
                 &signal,
                 distance,
                 wave_velocity
-            );
-            //let mut signal_shifted = signal.clone();
+            );*/
+            let mut signal_shifted = signal.clone();
             conjugate_slice32(&mut signal_shifted);
             signal_slots.push(signal_shifted);
         }
@@ -480,45 +480,12 @@ fn main() {
                     //println!("rx_data peak:{:} avg:{:}", max, avg);
                 }        
 
-                // This was the OLD way. Now, we use the timestamp to synchronize the RX and TX.
-                
-                // This does an FFT based correlation. Python: scipy.signal.correlate(rx_signal, signal, mode='same').
-                let initial_cor = correlate.correlate(&rx_signal, &signal);
-
-                // The highest peak *should* be the initial TX chirp signal and everything
-                // after should be the reflections. Find this initial index.
-                let mut n_best_mag = 0f32;
-                let mut n_best_ndx = 0usize;
-                for i in 0..initial_cor.len() {
-                    let mag = f32::sqrt(initial_cor[i].norm_sqr());
-                    if mag > n_best_mag {
-                        n_best_mag = mag;
-                        n_best_ndx = i;
-                    }
-                }
-
-                {
-                    let diff = best_ndx as isize - n_best_ndx as isize;
-                    avg_diff += diff as f64;
-                    avg_diff_cnt += 1.0;
-                    //println!("processing best_ndx:{:} n_best_ndx:{:} diff:{:}", best_ndx, n_best_ndx, avg_diff / avg_diff_cnt);
-                }
-
                 for i in 0..sample_distance {
                     let ss = &signal_slots[i];
                     
-                    // This is slower than the direct method.
-                    //let mag = f64::sqrt(small_correlate.correlate(&rx_signal[best_ndx+i..best_ndx+i+samps], &ss)[0].norm_sqr());
-
                     let sample = multiply_slice_offset_wrapping_sum::<f32>(
                         &ss, &rx_signal, best_ndx + i
                     );
-                    //let mag = f32::sqrt(sample.norm_sqr());
-                    //let theta = sample.arg();
-
-                    //if i == 0 {
-                    //    println!("mag[0]:{:}", mag);
-                    //}
 
                     avg_buf[sample_distance * cycle + i] = sample;
                 }

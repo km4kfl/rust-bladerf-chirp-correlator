@@ -66,8 +66,8 @@ def main(args):
 
     print('doing gaussian filter')
 
-    gm = np.mean(g, axis=0)
-    g -= gm
+    #gm = np.mean(g, axis=0)
+    #g -= gm
 
     g = ndimage.gaussian_filter(g, (args.gy, args.gx))
 
