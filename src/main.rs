@@ -238,6 +238,9 @@ fn main() {
     // The number of scan points. This is the number of points at which
     // the chirp correlation is evaluated. The more the further the distance
     // and greater the time.
+    let doppler_shift_min = -10e3f32;
+    let doppler_shift_max = 10e3f32;
+    let doppler_shift_steps = 100usize;
     let sample_distance = 500usize;
     // The speed of light or some fraction of it if you desire.
     let wave_velocity = 299792458.0f64;
@@ -317,7 +320,28 @@ fn main() {
             theta = theta % (std::f32::consts::PI * 2.0);
         }
     }
+
+    let mut shifted_copies: Vec<Vec<Complex<f32>>> = Vec::with_capacity(doppler_shift_steps);
     
+    let doppler_shift_amounts = linspace32(doppler_shift_min, doppler_shift_max, doppler_shift_steps as u32);
+
+    for x in 0..doppler_shift_steps {
+        let doppler_shift_amount = doppler_shift_amounts[x];
+        let mut theta = 0.0f32;
+        let theta_step = doppler_shift_amount * std::f32::consts::PI * 2.0 / sps as f32;
+        let mut out_signal: Vec<Complex<f32>> = Vec::with_capacity(samps);
+        for x in 0..samps {
+            let sample = Complex::<f32> {
+                re: 0.0,
+                im: theta,
+            };
+            out_signal.push(signal[x] * sample);
+            theta += theta_step;
+            theta = theta % (std::f32::consts::PI * 2.0);
+        }
+        shifted_copies.push(out_signal);
+    }
+
     let dev_arc = Arc::new(dev);
 
     let dev_arc_tx = dev_arc.clone();
@@ -393,15 +417,17 @@ fn main() {
     let mut cycle = 0usize;
 
     let avg_buf_lines = 32;
-    let mut avg_buf = vec!(Complex::<f32> { re: 0.0, im: 0.0 }; sample_distance * avg_buf_lines);
+    let mut avg_buf = vec!(0u32; sample_distance * avg_buf_lines);
 
     let mut rng = rand::thread_rng();
 
     let freq_start = 800e6f64;
     let freq_end = 6000e6f64;
 
+    let correlate = FftCorrelate32::new(samps + sample_distance - 1, samps);
+
     loop {
-        let freq = 450_697_000.0f64; //rng.gen::<f64>() * (freq_end - freq_start) + freq_start;
+        let freq = 1_830_697_000.0f64; //rng.gen::<f64>() * (freq_end - freq_start) + freq_start;
         
         dev_arc.set_frequency(bladerf::bladerf_module::RX0, freq as u64).expect(
             "should have set the RX frequency"
@@ -411,24 +437,6 @@ fn main() {
         );
 
         println!("set frequency {:}", freq);
-
-        let mut signal_slots: Vec<Vec<Complex<f32>>> = Vec::new();
-        let distance_per_sample = wave_velocity / sps as f64;
-    
-        for x in 0..sample_distance {
-            //println!("building cor {:}", x);
-            let distance = distance_per_sample * x as f64;
-            /*let mut signal_shifted = phase_shift_signal_by_distance(
-                sps as f64,
-                freq as f64,
-                &signal,
-                distance,
-                wave_velocity
-            );*/
-            let mut signal_shifted = signal.clone();
-            conjugate_slice32(&mut signal_shifted);
-            signal_slots.push(signal_shifted);
-        }
 
         loop {
             let mut rx_datas: Vec<(usize, Vec<Complex<i16>>)> = Vec::new();
@@ -478,36 +486,46 @@ fn main() {
                     }
                     avg /= rx_data.len() as f32;
                     //println!("rx_data peak:{:} avg:{:}", max, avg);
-                }        
+                }   
+
+
+                let mut cor_buffer: Vec<Vec<f32>> = Vec::with_capacity(shifted_copies.len());
+
+                for i in 0..shifted_copies.len() {
+                    let ss = &shifted_copies[i];
+
+                    let res = correlate.correlate(&rx_signal[0..samps + sample_distance], &ss);
+                    let mut out: Vec<f32> = Vec::with_capacity(res.len());
+                    for y in 0..res.len() {
+                        out.push(f32::sqrt(res[y].norm_sqr()));
+                    }
+                    cor_buffer.push(out);
+                }
 
                 for i in 0..sample_distance {
-                    let ss = &signal_slots[i];
-                    
-                    let sample = multiply_slice_offset_wrapping_sum::<f32>(
-                        &ss, &rx_signal, best_ndx + i
-                    );
+                    let mut high_value = 0.0f32;
+                    let mut high_index = 0usize;
+                    for y in 0..cor_buffer.len() {
+                        let value = cor_buffer[y][i];
+                        if value > high_value {
+                            high_value = value;
+                            high_index = y;
+                        }
+                    }
 
-                    avg_buf[sample_distance * cycle + i] = sample;
+                    avg_buf[sample_distance * cycle + i] = high_index as u32;
                 }
             }
 
-            println!("writing to file");
-            fout_buffer.seek(SeekFrom::Start(0)).expect("seeking into buffer");
-            fout_buffer.write_f32::<LittleEndian>((freq / 1e3) as f32).expect("encoding f64 into bytes");
-            fout.write(fout_buffer.get_ref()).expect("writing magnitude to file");
-
             for i in 0..sample_distance {
-                let mut avg = Complex::<f32> { re: 0.0, im: 0.0 };
+                let mut avg = 0f32;
                 for y in 0..avg_buf_lines {
-                    avg += avg_buf[sample_distance * y + i];
+                    avg += avg_buf[sample_distance * y + i] as f32;
                 }
                 avg /= avg_buf_lines as f32;
                 // Write the value to the file.
                 fout_buffer.seek(SeekFrom::Start(0)).expect("seeking into buffer");
-                fout_buffer.write_f32::<LittleEndian>(avg.re).expect("encoding f64 into bytes");
-                fout.write(fout_buffer.get_ref()).expect("writing magnitude to file");
-                fout_buffer.seek(SeekFrom::Start(0)).expect("seeking into buffer");
-                fout_buffer.write_f32::<LittleEndian>(avg.im).expect("encoding f64 into bytes");
+                fout_buffer.write_f32::<LittleEndian>(avg).expect("encoding f64 into bytes");
                 fout.write(fout_buffer.get_ref()).expect("writing magnitude to file");
             }
         }

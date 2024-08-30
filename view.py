@@ -21,9 +21,9 @@ def main(args):
         print(fd.tell())
         fd.seek(0)
         while True:
-            data = fd.read((samps * 2 + 1) * 4)
+            data = fd.read(samps * 4)
             try:
-                v = np.ndarray(samps, np.complex64, data[4:])
+                v = np.ndarray(samps, np.float32, data)
             except TypeError:
                 break
             v = np.array(v)
@@ -31,8 +31,6 @@ def main(args):
             x += 1
 
     g = np.array(g)
-
-    g = g[2:, :]
 
     #g = g[2:, :]
 
@@ -56,7 +54,7 @@ def main(args):
 
     #g[g < 0] = np.nan
 
-    g = np.abs(g)
+    #g = np.abs(g)
 
     #print('subtracting column average')
     #gm = np.mean(g, axis=0)
@@ -68,6 +66,8 @@ def main(args):
 
     #gm = np.mean(g, axis=0)
     #g -= gm
+
+    g -= 50
 
     g = ndimage.gaussian_filter(g, (args.gy, args.gx))
 
@@ -83,8 +83,8 @@ def main(args):
     #plt.imshow(g, aspect='auto', cmap='rainbow')
     plt.show()
 
-    plt.plot(g[:, 0])
-    plt.show()
+    #plt.plot(g[:, 0])
+    #plt.show()
 
 if __name__ == '__main__':
     ap = argparse.ArgumentParser()
