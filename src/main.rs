@@ -227,21 +227,21 @@ fn main() {
 
     // The samples per second.
     //let sps = 520834u32;
-    let sps = 8_000_000u32;
+    let sps = 4000000u32;
     // The size of the chirp in samples.
-    let samps: usize = 1024 * 16;
+    let samps: usize = 4096;
     // The chirp start frequency.
-    let freq_start = -95e3f32;
+    let freq_start = 10e3f32;
     // The chirp end frequency.
-    let freq_end = 95e3f32;
+    let freq_end = 12e3f32;
     let bw = 200_000u32;
     // The number of scan points. This is the number of points at which
     // the chirp correlation is evaluated. The more the further the distance
     // and greater the time.
-    let doppler_shift_min = -10e3f32;
-    let doppler_shift_max = 10e3f32;
-    let doppler_shift_steps = 100usize;
-    let sample_distance = 500usize;
+    let doppler_shift_min = -5e3f32;
+    let doppler_shift_max = 5e3f32;
+    let doppler_shift_steps = 500usize;
+    let sample_distance = 400usize;
     // The speed of light or some fraction of it if you desire.
     let wave_velocity = 299792458.0f64;
 
@@ -269,6 +269,14 @@ fn main() {
     dev.set_sample_rate(bladerf::bladerf_module::TX0, sps).expect(
         "TX0/TX1 sampling rate set"
     );
+
+    println!("bias_tee:{:}", dev.get_bias_tee(bladerf::bladerf_module::TX0).unwrap());
+
+    dev.set_bias_tee(bladerf::bladerf_module::TX0, true).expect(
+        "set bias tee on TX0"
+    );
+
+    println!("bias_tee:{:}", dev.get_bias_tee(bladerf::bladerf_module::TX0).unwrap());
 
     let num_buffers = 16u32;
     let buffer_size = 4096u32;
@@ -381,7 +389,7 @@ fn main() {
 
     let mut rx_data = vec!(
         Complex::<i16> { re: 0i16, im: 0i16 };
-        samps * 2
+        samps * 3
     );
 
     let mut rx_signal = vec!(
@@ -416,8 +424,9 @@ fn main() {
 
     let mut cycle = 0usize;
 
-    let avg_buf_lines = 32;
+    let avg_buf_lines = 1;
     let mut avg_buf = vec!(0u32; sample_distance * avg_buf_lines);
+    let mut avg_buf2 = vec!(0f32; sample_distance * avg_buf_lines);
 
     let mut rng = rand::thread_rng();
 
@@ -440,15 +449,14 @@ fn main() {
 
         loop {
             let mut rx_datas: Vec<(usize, Vec<Complex<i16>>)> = Vec::new();
+            let mut meta;
+            
+            meta = bladerf::Struct_bladerf_metadata::default();
+            meta.flags = bladerf::bladerf_meta_rx::FLAG_RX_NOW as u32;
+            dev_arc.sync_rx_meta(&mut rx_trash, &mut meta, 20000).expect("rx sync call [trash]");
 
             while rx_datas.len() < avg_buf_lines {
                 // Clear the buffer.
-                let mut meta;
-                
-                /*meta = bladerf::Struct_bladerf_metadata::default();
-                meta.flags = bladerf::bladerf_meta_rx::FLAG_RX_NOW as u32;
-                dev_arc.sync_rx_meta(&mut rx_trash, &mut meta, 20000).expect("rx sync call [trash]");
-                */
 
                 meta = bladerf::Struct_bladerf_metadata::default();
                 meta.flags = bladerf::bladerf_meta_rx::FLAG_RX_NOW as u32;
@@ -491,10 +499,19 @@ fn main() {
 
                 let mut cor_buffer: Vec<Vec<f32>> = Vec::with_capacity(shifted_copies.len());
 
+                println!("doing correlations");
                 for i in 0..shifted_copies.len() {
                     let ss = &shifted_copies[i];
 
-                    let res = correlate.correlate(&rx_signal[0..samps + sample_distance], &ss);
+                    let res = correlate.correlate(&rx_signal[best_ndx..best_ndx + samps + sample_distance], &ss);
+                    
+                    /*let res: Vec<Complex<f32>> = Vec::with_capacity(sample_distance);
+                    for  u in 0..sample_distance {
+                        for w in 0..samps {
+                            rx_signal[]
+                        }
+                    }*/
+
                     let mut out: Vec<f32> = Vec::with_capacity(res.len());
                     for y in 0..res.len() {
                         out.push(f32::sqrt(res[y].norm_sqr()));
@@ -502,6 +519,7 @@ fn main() {
                     cor_buffer.push(out);
                 }
 
+                println!("doing max of set");
                 for i in 0..sample_distance {
                     let mut high_value = 0.0f32;
                     let mut high_index = 0usize;
@@ -514,18 +532,25 @@ fn main() {
                     }
 
                     avg_buf[sample_distance * cycle + i] = high_index as u32;
+                    avg_buf2[sample_distance * cycle + i] = high_value;
                 }
             }
 
             for i in 0..sample_distance {
                 let mut avg = 0f32;
+                let mut avg2 = 0f32;
                 for y in 0..avg_buf_lines {
                     avg += avg_buf[sample_distance * y + i] as f32;
+                    avg2 += avg_buf2[sample_distance * y + i];
                 }
                 avg /= avg_buf_lines as f32;
+                avg2 /= avg_buf_lines as f32;
                 // Write the value to the file.
                 fout_buffer.seek(SeekFrom::Start(0)).expect("seeking into buffer");
                 fout_buffer.write_f32::<LittleEndian>(avg).expect("encoding f64 into bytes");
+                fout.write(fout_buffer.get_ref()).expect("writing magnitude to file");
+                fout_buffer.seek(SeekFrom::Start(0)).expect("seeking into buffer");
+                fout_buffer.write_f32::<LittleEndian>(avg2).expect("encoding f64 into bytes");
                 fout.write(fout_buffer.get_ref()).expect("writing magnitude to file");
             }
         }

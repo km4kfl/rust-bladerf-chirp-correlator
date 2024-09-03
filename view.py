@@ -16,21 +16,23 @@ def main(args):
 
     x = 0
     g = []
+    m = []
     with open(args.data, 'rb') as fd:
         fd.seek(0, 2)
         print(fd.tell())
         fd.seek(0)
         while True:
-            data = fd.read(samps * 4)
+            data = fd.read(samps * 2 * 4)
             try:
-                v = np.ndarray(samps, np.float32, data)
+                v = np.ndarray(samps * 2, np.float32, data)
             except TypeError:
                 break
-            v = np.array(v)
-            g.append(v)
+            g.append(v[0::2])
+            m.append(v[1::2])
             x += 1
 
     g = np.array(g)
+    m = np.array(m)
 
     #g = g[2:, :]
 
@@ -67,14 +69,29 @@ def main(args):
     #gm = np.mean(g, axis=0)
     #g -= gm
 
-    g -= 50
-
     g = ndimage.gaussian_filter(g, (args.gy, args.gx))
 
     print('plotting')
     sol = 299792458
 
     d = sol / args.sps * g.shape[1] * 0.5
+
+    ff = 1.83e9
+    g = (g - 250) / 250 * 5e3 + ff
+
+    # g = c / (c + vs) * ff 
+    # g / ff = c / (c + vs) [+]
+    # ff / g = (c + vs) / c [+]
+    # ff / g = (c + vs) * (1 / c) [+]
+    # ff / g = (1 / c) * c + (1 / c) * vs [+]
+    # ff / g - (1 / c) * c = (1 / c) * vs [+]
+    # (ff / g - (1 / c) * c) / (1 / c) = vs [+]
+
+    # convert to meters/second for doppler shift
+    g = (ff / g - (1 / sol) * sol) / (1 / sol) 
+
+    # convert to mph
+    g = g / 1600 * 60 * 60
 
     plt.title('Correlation')
     plt.ylabel('time')
