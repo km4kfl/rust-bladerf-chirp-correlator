@@ -215,6 +215,22 @@ fn phase_shift_signal_by_distance(
     signal
 }
 
+/// Returns an exponential space over the start and end specified.
+fn expspace64(start: f64, end: f64, count: usize, exp: f64) -> Vec<f64> {
+    let mut base = linspace64(0f64, count as f64, count as u32);
+
+    for x in 0..base.len() {
+        base[x] = f64::powf(base[x], exp);
+    }
+
+    let base_max = base[base.len() - 1];
+
+    for x in 0..base.len() {
+        base[x] = (base[x] / base_max) * (base_max - base[x]) + base[0];
+    }
+
+    return base;
+}
 
 fn main() {
     println!("opening bladerf..");
@@ -227,30 +243,34 @@ fn main() {
 
     // The samples per second.
     //let sps = 520834u32;
-    let sps = 4000000u32;
+    let sps = 8000000;
     // The size of the chirp in samples.
-    let samps: usize = 4096;
+    let samps: usize = 1024 * 32;
     // The chirp start frequency.
-    let freq_start = 10e3f32;
+    let freq_start = -200e3f64;
     // The chirp end frequency.
-    let freq_end = 12e3f32;
-    let bw = 200_000u32;
+    let freq_end = 200e3f64;
+    let bw = 520_834u32;
     // The number of scan points. This is the number of points at which
     // the chirp correlation is evaluated. The more the further the distance
     // and greater the time.
-    let doppler_shift_min = -5e3f32;
-    let doppler_shift_max = 5e3f32;
-    let doppler_shift_steps = 500usize;
-    let sample_distance = 400usize;
+    let doppler_shift_min = -5e3f64;
+    let doppler_shift_max = 5e3f64;
+    let doppler_shift_steps = 80usize;
+    let sample_distance = 800usize;
     // The speed of light or some fraction of it if you desire.
     let wave_velocity = 299792458.0f64;
-
-    dev.set_frequency(bladerf::bladerf_module::RX0, 4_000_000_000).expect(
+    //let freq = 1_830_124_000.0f64;
+    let freq = 3_000_000_000.0f64;
+        
+    dev.set_frequency(bladerf::bladerf_module::RX0, freq as u64).expect(
         "should have set the RX frequency"
     );
-    dev.set_frequency(bladerf::bladerf_module::TX0, 4_000_000_000).expect(
+    dev.set_frequency(bladerf::bladerf_module::TX0, freq as u64).expect(
         "should have set the TX frequency"
     );
+
+    println!("set frequency {:}", freq);
 
     dev.set_gain(bladerf::bladerf_module::TX0, 60).expect("TX0 gain set");
     dev.set_gain(bladerf::bladerf_module::TX1, 0).expect("TX1 gain set");
@@ -311,41 +331,42 @@ fn main() {
         "tx0 module enable"
     );
 
-    let mut signal: Vec<Complex<f32>> = vec!(Complex::<f32> { re: 0.0f32, im: 0.0f32 }; samps);
+    let mut signal: Vec<Complex<f64>> = vec!(Complex::<f64> { re: 0.0, im: 0.0 }; samps);
     let mut tx_data: Vec<Complex<i16>> = vec!(Complex::<i16> { re: 0i16, im: 0i16 }; samps);
-    let theta_step_start = freq_start * std::f32::consts::PI * 2.0f32 / (sps as f32);
-    let theta_step_end = freq_end * std::f32::consts::PI * 2.0f32 / (sps as f32);
-    let t_space = linspace32(theta_step_start, theta_step_end, samps as u32);
+    let theta_step_start = freq_start * std::f64::consts::PI * 2.0f64 / (sps as f64);
+    let theta_step_end = freq_end * std::f64::consts::PI * 2.0f64 / (sps as f64);
+    //let t_space = linspace64(theta_step_start, theta_step_end, samps as u32);
+    let t_space = expspace64(theta_step_start, theta_step_end, samps, 1.2);
 
     {
-        let mut theta = 0.0f32;
+        let mut theta = 0.0f64;
         for x in 0..samps {
-            signal[x].re = f32::cos(theta);
-            signal[x].im = f32::sin(theta);
+            signal[x].re = f64::cos(theta);
+            signal[x].im = f64::sin(theta);
             tx_data[x].re = (signal[x].re * 2000.0) as i16;
             tx_data[x].im = (signal[x].im * 2000.0) as i16;
             theta += t_space[x];
-            theta = theta % (std::f32::consts::PI * 2.0);
+            theta = theta % (std::f64::consts::PI * 2.0);
         }
     }
 
-    let mut shifted_copies: Vec<Vec<Complex<f32>>> = Vec::with_capacity(doppler_shift_steps);
+    let mut shifted_copies: Vec<Vec<Complex<f64>>> = Vec::with_capacity(doppler_shift_steps);
     
-    let doppler_shift_amounts = linspace32(doppler_shift_min, doppler_shift_max, doppler_shift_steps as u32);
+    let doppler_shift_amounts = linspace64(doppler_shift_min, doppler_shift_max, doppler_shift_steps as u32);
 
     for x in 0..doppler_shift_steps {
         let doppler_shift_amount = doppler_shift_amounts[x];
-        let mut theta = 0.0f32;
-        let theta_step = doppler_shift_amount * std::f32::consts::PI * 2.0 / sps as f32;
-        let mut out_signal: Vec<Complex<f32>> = Vec::with_capacity(samps);
+        let mut theta = 0.0f64;
+        let theta_step = doppler_shift_amount * std::f64::consts::PI * 2.0 / sps as f64;
+        let mut out_signal: Vec<Complex<f64>> = Vec::with_capacity(samps);
         for x in 0..samps {
-            let sample = Complex::<f32> {
+            let sample = Complex::<f64> {
                 re: 0.0,
                 im: theta,
-            };
+            }.exp();
             out_signal.push(signal[x] * sample);
             theta += theta_step;
-            theta = theta % (std::f32::consts::PI * 2.0);
+            theta = theta % (std::f64::consts::PI * 2.0);
         }
         shifted_copies.push(out_signal);
     }
@@ -393,7 +414,7 @@ fn main() {
     );
 
     let mut rx_signal = vec!(
-        Complex::<f32> {
+        Complex::<f64> {
             re: 0.0,
             im: 0.0,
         }; rx_data.len()
@@ -413,9 +434,7 @@ fn main() {
 
     let mut fout_buffer = Cursor::new(vec!(0u8; 4));
 
-    let correlate = FftCorrelate32::new(rx_data.len(), samps);
-
-    //let small_correlate = FftCorrelate::new(samps, samps);
+    let correlate = FftCorrelate64::new(samps + sample_distance - 1, samps);
 
     let initial_timestamp = rx_rx.recv().expect("sync tx reply with initial timestamp");
 
@@ -426,133 +445,111 @@ fn main() {
 
     let avg_buf_lines = 1;
     let mut avg_buf = vec!(0u32; sample_distance * avg_buf_lines);
-    let mut avg_buf2 = vec!(0f32; sample_distance * avg_buf_lines);
+    let mut avg_buf2 = vec!(0f64; sample_distance * avg_buf_lines);
 
     let mut rng = rand::thread_rng();
 
     let freq_start = 800e6f64;
     let freq_end = 6000e6f64;
 
-    let correlate = FftCorrelate32::new(samps + sample_distance - 1, samps);
-
     loop {
-        let freq = 1_830_697_000.0f64; //rng.gen::<f64>() * (freq_end - freq_start) + freq_start;
+        let mut rx_datas: Vec<(usize, Vec<Complex<i16>>)> = Vec::new();
+        let mut meta;
         
-        dev_arc.set_frequency(bladerf::bladerf_module::RX0, freq as u64).expect(
-            "should have set the RX frequency"
-        );
-        dev_arc.set_frequency(bladerf::bladerf_module::TX0, freq as u64).expect(
-            "should have set the TX frequency"
-        );
+        meta = bladerf::Struct_bladerf_metadata::default();
+        meta.flags = bladerf::bladerf_meta_rx::FLAG_RX_NOW as u32;
+        dev_arc.sync_rx_meta(&mut rx_trash, &mut meta, 20000).expect("rx sync call [trash]");
 
-        println!("set frequency {:}", freq);
+        while rx_datas.len() < avg_buf_lines {
+            // Clear the buffer.
 
-        loop {
-            let mut rx_datas: Vec<(usize, Vec<Complex<i16>>)> = Vec::new();
-            let mut meta;
-            
             meta = bladerf::Struct_bladerf_metadata::default();
             meta.flags = bladerf::bladerf_meta_rx::FLAG_RX_NOW as u32;
-            dev_arc.sync_rx_meta(&mut rx_trash, &mut meta, 20000).expect("rx sync call [trash]");
+            dev_arc.sync_rx_meta(&mut rx_data, &mut meta, 20000).expect("rx sync call [data]");
 
-            while rx_datas.len() < avg_buf_lines {
-                // Clear the buffer.
-
-                meta = bladerf::Struct_bladerf_metadata::default();
-                meta.flags = bladerf::bladerf_meta_rx::FLAG_RX_NOW as u32;
-                dev_arc.sync_rx_meta(&mut rx_data, &mut meta, 20000).expect("rx sync call [data]");
-
-                if meta.actual_count as usize != rx_data.len() {
-                    continue;
-                }
-
+            if meta.actual_count as usize != rx_data.len() {
                 println!("actual:{:} exp:{:}", meta.actual_count, rx_data.len());
-
-                // Calculate the offset of the first chirp in the buffer. I'm assuming the RX and TX use the
-                // same sample counter in the FPGA.
-                let best_ndx = samps - ((meta.timestamp - initial_timestamp) % samps as u64) as usize;
-
-                rx_datas.push((best_ndx, rx_data.clone()));
+                continue;
             }
 
-            println!("rx_datas.len():{:}", rx_datas.len());
+            // Calculate the offset of the first chirp in the buffer. I'm assuming the RX and TX use the
+            // same sample counter in the FPGA.
+            let best_ndx = samps - ((meta.timestamp - initial_timestamp) % samps as u64) as usize;
 
-            for cycle in 0..avg_buf_lines {
-                //println!("rx:timestamp:{:} actual_count:{:} best_ndx:{:}", meta.timestamp, meta.actual_count, best_ndx);
-                let best_ndx = rx_datas[cycle].0;
+            rx_datas.push((best_ndx, rx_data.clone()));
+        }
 
-                // Convert the 16-bit signed complex to 64-bit floating point complex.
-                convert_iqi16_to_iqf32(&rx_datas[cycle].1, &mut rx_signal);
-                // Scale it down so the correlation sums don't get larger than needed.
-                div_iqf32_scalar_inplace(&mut rx_signal, 2896.309);
+        println!("rx_datas.len():{:}", rx_datas.len());
 
-                {
-                    let max = max_iq_slice(&rx_signal);
-                    let mut avg = 0.0f32;
-                    for v in rx_signal.iter() {
-                        avg += f32::sqrt(v.norm_sqr());
+        for cycle in 0..avg_buf_lines {
+            //println!("rx:timestamp:{:} actual_count:{:} best_ndx:{:}", meta.timestamp, meta.actual_count, best_ndx);
+            let best_ndx = rx_datas[cycle].0;
+
+            // Convert the 16-bit signed complex to 64-bit floating point complex.
+            convert_iqi16_to_iqf64(&rx_datas[cycle].1, &mut rx_signal);
+            // Scale it down so the correlation sums don't get larger than needed.
+            div_iqf64_scalar_inplace(&mut rx_signal, 2896.309);
+
+            let mut cor_buffer: Vec<Vec<f64>> = Vec::with_capacity(shifted_copies.len());
+
+            println!("doing correlations");
+            for i in 0..shifted_copies.len() {
+                let ss = &shifted_copies[i];
+
+                /*let res = correlate.correlate(
+                    &rx_signal[best_ndx..best_ndx + samps + sample_distance],
+                    &ss
+                );*/
+                
+                let mut res: Vec<Complex<f64>> = Vec::with_capacity(sample_distance);
+                for u in 0..sample_distance {
+                    let mut sample = Complex::<f64>::default();
+                    for w in 0..samps {
+                        sample += rx_signal[best_ndx + u + w] * ss[w].conj();
                     }
-                    avg /= rx_data.len() as f32;
-                    //println!("rx_data peak:{:} avg:{:}", max, avg);
-                }   
-
-
-                let mut cor_buffer: Vec<Vec<f32>> = Vec::with_capacity(shifted_copies.len());
-
-                println!("doing correlations");
-                for i in 0..shifted_copies.len() {
-                    let ss = &shifted_copies[i];
-
-                    let res = correlate.correlate(&rx_signal[best_ndx..best_ndx + samps + sample_distance], &ss);
-                    
-                    /*let res: Vec<Complex<f32>> = Vec::with_capacity(sample_distance);
-                    for  u in 0..sample_distance {
-                        for w in 0..samps {
-                            rx_signal[]
-                        }
-                    }*/
-
-                    let mut out: Vec<f32> = Vec::with_capacity(res.len());
-                    for y in 0..res.len() {
-                        out.push(f32::sqrt(res[y].norm_sqr()));
-                    }
-                    cor_buffer.push(out);
+                    res.push(sample / samps as f64);
                 }
 
-                println!("doing max of set");
-                for i in 0..sample_distance {
-                    let mut high_value = 0.0f32;
-                    let mut high_index = 0usize;
-                    for y in 0..cor_buffer.len() {
-                        let value = cor_buffer[y][i];
-                        if value > high_value {
-                            high_value = value;
-                            high_index = y;
-                        }
-                    }
-
-                    avg_buf[sample_distance * cycle + i] = high_index as u32;
-                    avg_buf2[sample_distance * cycle + i] = high_value;
+                let mut out: Vec<f64> = Vec::with_capacity(res.len());
+                for y in 0..res.len() {
+                    out.push(f64::sqrt(res[y].norm_sqr()));
                 }
+                cor_buffer.push(out);
             }
 
+            println!("doing max of set");
             for i in 0..sample_distance {
-                let mut avg = 0f32;
-                let mut avg2 = 0f32;
-                for y in 0..avg_buf_lines {
-                    avg += avg_buf[sample_distance * y + i] as f32;
-                    avg2 += avg_buf2[sample_distance * y + i];
+                let mut high_value = 0f64;
+                let mut high_index = 0usize;
+                for y in 0..cor_buffer.len() {
+                    let value = cor_buffer[y][i];
+                    if value > high_value {
+                        high_value = value;
+                        high_index = y;
+                    }
                 }
-                avg /= avg_buf_lines as f32;
-                avg2 /= avg_buf_lines as f32;
-                // Write the value to the file.
-                fout_buffer.seek(SeekFrom::Start(0)).expect("seeking into buffer");
-                fout_buffer.write_f32::<LittleEndian>(avg).expect("encoding f64 into bytes");
-                fout.write(fout_buffer.get_ref()).expect("writing magnitude to file");
-                fout_buffer.seek(SeekFrom::Start(0)).expect("seeking into buffer");
-                fout_buffer.write_f32::<LittleEndian>(avg2).expect("encoding f64 into bytes");
-                fout.write(fout_buffer.get_ref()).expect("writing magnitude to file");
+
+                avg_buf[sample_distance * cycle + i] = high_index as u32;
+                avg_buf2[sample_distance * cycle + i] = high_value;
             }
+        }
+
+        for i in 0..sample_distance {
+            let mut avg = 0f64;
+            let mut avg2 = 0f64;
+            for y in 0..avg_buf_lines {
+                avg += avg_buf[sample_distance * y + i] as f64;
+                avg2 += avg_buf2[sample_distance * y + i];
+            }
+            avg /= avg_buf_lines as f64;
+            avg2 /= avg_buf_lines as f64;
+            // Write the value to the file.
+            fout_buffer.seek(SeekFrom::Start(0)).expect("seeking into buffer");
+            fout_buffer.write_f32::<LittleEndian>(avg as f32).expect("encoding f64 into bytes");
+            fout.write(fout_buffer.get_ref()).expect("writing magnitude to file");
+            fout_buffer.seek(SeekFrom::Start(0)).expect("seeking into buffer");
+            fout_buffer.write_f32::<LittleEndian>(avg2 as f32).expect("encoding f64 into bytes");
+            fout.write(fout_buffer.get_ref()).expect("writing magnitude to file");
         }
     }
 

@@ -69,7 +69,9 @@ def main(args):
     #gm = np.mean(g, axis=0)
     #g -= gm
 
-    g = ndimage.gaussian_filter(g, (args.gy, args.gx))
+    if args.gx > 0 or args.gx > 0:
+        g = ndimage.gaussian_filter(g, (args.gy, args.gx))
+        m = ndimage.gaussian_filter(m, (args.gy, args.gx))
 
     print('plotting')
     sol = 299792458
@@ -77,7 +79,8 @@ def main(args):
     d = sol / args.sps * g.shape[1] * 0.5
 
     ff = 1.83e9
-    g = (g - 250) / 250 * 5e3 + ff
+    #g = (g - 10) / 10
+    #g = g * 5e3 + ff
 
     # g = c / (c + vs) * ff 
     # g / ff = c / (c + vs) [+]
@@ -88,15 +91,30 @@ def main(args):
     # (ff / g - (1 / c) * c) / (1 / c) = vs [+]
 
     # convert to meters/second for doppler shift
-    g = (ff / g - (1 / sol) * sol) / (1 / sol) 
+    #g = (ff / g - (1 / sol) * sol) / (1 / sol) 
+    #g = (ff / g - sol) * sol 
 
     # convert to mph
-    g = g / 1600 * 60 * 60
+    #g = g / 1600 * 60 * 60
+
+    img = np.zeros((g.shape[0], g.shape[1], 3), np.uint8)
+
+    m_max = np.max(m)
+    g_min = 0
+    g_max = 80
+
+    for y in range(g.shape[0]):
+        for x in range(g.shape[1]):
+            gv = (g[y, x] - g_min) / (g_max - g_min)
+            mv = m[y, x] / m_max
+            img[y, x, 0] = gv * 255
+            img[y, x, 2] = (1 - gv) * 255
+            img[y, x, 1] = mv * 255
 
     plt.title('Correlation')
     plt.ylabel('time')
     plt.xlabel('approx. meters')
-    plt.imshow(g, aspect='auto', extent=(0, d, g.shape[0], 0), cmap='rainbow')
+    plt.imshow(img, aspect='auto', extent=(0, d, g.shape[0], 0), cmap='nipy_spectral')
     #plt.imshow(g, aspect='auto', cmap='rainbow')
     plt.show()
 
