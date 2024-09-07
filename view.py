@@ -34,7 +34,7 @@ def main(args):
     g = np.array(g)
     m = np.array(m)
 
-    #g = g[2:, :]
+    g = g[args.start_index:, :]
 
     #g = g[28::32, :]
     
@@ -66,8 +66,9 @@ def main(args):
 
     print('doing gaussian filter')
 
-    #gm = np.mean(g, axis=0)
-    #g -= gm
+    if args.subtract_mean:
+        gm = np.mean(g, axis=0)
+        g -= gm
 
     if args.gx > 0 or args.gx > 0:
         g = ndimage.gaussian_filter(g, (args.gy, args.gx))
@@ -107,14 +108,14 @@ def main(args):
         for x in range(g.shape[1]):
             gv = (g[y, x] - g_min) / (g_max - g_min)
             mv = m[y, x] / m_max
-            img[y, x, 0] = gv * 255
-            img[y, x, 2] = (1 - gv) * 255
-            img[y, x, 1] = mv * 255
+            img[y, x, 0] = np.round(gv * 255)
+            img[y, x, 2] = 255 - img[y, x, 0]
+            img[y, x, 1] = np.round(mv * 255)
 
     plt.title('Correlation')
     plt.ylabel('time')
     plt.xlabel('approx. meters')
-    plt.imshow(img, aspect='auto', extent=(0, d, g.shape[0], 0), cmap='nipy_spectral')
+    plt.imshow(g, aspect='auto', extent=(0, d, g.shape[0], 0), cmap='nipy_spectral')
     #plt.imshow(g, aspect='auto', cmap='rainbow')
     plt.show()
 
@@ -137,4 +138,8 @@ if __name__ == '__main__':
     ap.add_argument('--data', type=str, default='out.bin', help=_help)
     _help = 'The number of points per scan aka sample_distance.'
     ap.add_argument('--points', type=int, default=200, help=_help)
+    _help = 'Subtract the mean prior to any gaussian filtering.'
+    ap.add_argument('--subtract-mean', action=argparse.BooleanOptionalAction, default=False)
+    _help = 'The scan index to start rendering from. Allows skipping the beginning of the data.'
+    ap.add_argument('--start-index', type=int, default=0)
     main(ap.parse_args())

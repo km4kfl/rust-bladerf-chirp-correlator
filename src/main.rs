@@ -160,22 +160,22 @@ fn fftfreq(sz: usize) -> Vec<f64> {
         let g = ((sz - 1) / 2) as u32;
         let a = mul_sf64_scalar(&linspace64(1.0, g as f64, g), spacing);
         let b = mul_sf64_scalar(&linspace64(-(g as f64), -1.0, g), spacing);
+        for v in a.iter() {
+            out.push(*v);
+        }        
         for v in b.iter() {
             out.push(*v);
         }        
-        for v in a.iter() {
-            out.push(*v);
-        }
     } else {
         let g = (sz / 2) as u32;
         let a = mul_sf64_scalar(&linspace64(1.0, g as f64 - 1.0, g - 1), spacing);
         let b = mul_sf64_scalar(&linspace64(-(g as f64), -1.0, g), spacing);
+        for v in a.iter() {
+            out.push(*v);
+        }        
         for v in b.iter() {
             out.push(*v);
         }        
-        for v in a.iter() {
-            out.push(*v);
-        }
     }
 
     out
@@ -188,13 +188,12 @@ fn fftfreq(sz: usize) -> Vec<f64> {
 fn phase_shift_signal_by_distance(
     sps: f64,
     center_freq: f64,
-    signal_in: &[Complex<f32>],
+    signal_in: &[Complex<f64>],
     dist: f64,
-    wave_velocity: f64) -> Vec<Complex<f32>> {
-    let mut planner = rustfft::FftPlanner::new();
-    let fft_forward = planner.plan_fft(signal_in.len(), rustfft::FftDirection::Forward);
-    let fft_backward = planner.plan_fft(signal_in.len(), rustfft::FftDirection::Inverse);
-    
+    wave_velocity: f64,
+    fft_forward: &Arc<dyn rustfft::Fft<f64>>,
+    fft_backward: &Arc<dyn rustfft::Fft<f64>>) 
+    -> Vec<Complex<f64>> {    
     let mut signal = Vec::with_capacity(signal_in.len());
     signal.extend_from_slice(signal_in);
 
@@ -204,9 +203,9 @@ fn phase_shift_signal_by_distance(
     
     for i in 0..freqs.len() {
         let phase_distance = dist / (wave_velocity / (freqs[i] * sps * 0.5 + center_freq)) * std::f64::consts::PI * 2.0;
-        signal[i] *= (Complex::<f32> {
+        signal[i] *= (Complex::<f64> {
             re: 0.0,
-            im: (phase_distance % (std::f64::consts::PI * 2.0)) as f32,
+            im: (phase_distance % (std::f64::consts::PI * 2.0)),
         }).exp();
     }
 
@@ -242,27 +241,31 @@ fn main() {
     );
 
     // The samples per second.
-    //let sps = 520834u32;
-    let sps = 8000000;
+    let sps = 520834u32;
+    //let sps = 40_000_000;
     // The size of the chirp in samples.
     let samps: usize = 1024 * 32;
     // The chirp start frequency.
     let freq_start = -200e3f64;
     // The chirp end frequency.
     let freq_end = 200e3f64;
-    let bw = 520_834u32;
+    let bw = sps;
     // The number of scan points. This is the number of points at which
     // the chirp correlation is evaluated. The more the further the distance
     // and greater the time.
     let doppler_shift_min = -5e3f64;
     let doppler_shift_max = 5e3f64;
-    let doppler_shift_steps = 80usize;
-    let sample_distance = 800usize;
+    let doppler_shift_steps = 40usize;
+    let sample_distance = 3000usize;
     // The speed of light or some fraction of it if you desire.
     let wave_velocity = 299792458.0f64;
     //let freq = 1_830_124_000.0f64;
     let freq = 3_000_000_000.0f64;
-        
+    // It should be better to perform averaging over all the data but
+    // if it is producing too much output you can slow it down by averaging
+    // some of it together.
+    let avg_buf_lines = 1;
+    
     dev.set_frequency(bladerf::bladerf_module::RX0, freq as u64).expect(
         "should have set the RX frequency"
     );
@@ -379,21 +382,25 @@ fn main() {
     let (tx_tx, rx_rx) = channel::<u64>();
 
     let tx_handler = thread::spawn(move || {
-        let initial_timestamp = dev_arc_tx.get_timestamp(bladerf::bladerf_module::TX0) + 
-                                (sps as f64 * 0.100f64) as u64;
-
-        tx_tx.send(initial_timestamp).expect("tx sending initial timestamp value");
-
-        let mut meta = bladerf::Struct_bladerf_metadata {
-            timestamp: initial_timestamp,
-            flags: bladerf::bladerf_meta_tx::FLAG_TX_BURST_START as u32,
-            status: 0,
-            actual_count: 0,
-            reserved: [0u8; 32],
-        };
+        let mut ts = dev_arc_tx.get_timestamp(bladerf::bladerf_module::TX0);
 
         loop {
-            dev_arc_tx.sync_tx_meta(&tx_data, &mut meta, 20000).expect("sync_tx");
+            ts += (sps as f64 * 2.0f64) as u64;
+
+            tx_tx.send(ts).expect("tx sending initial timestamp value");            
+            
+            let mut meta = bladerf::Struct_bladerf_metadata {
+                timestamp: ts,
+                flags: bladerf::bladerf_meta_tx::FLAG_TX_BURST_START as u32 | bladerf::bladerf_meta_tx::FLAG_TX_BURST_END as u32,
+                status: 0,
+                actual_count: 0,
+                reserved: [0u8; 32],
+            };
+
+            match dev_arc_tx.sync_tx_meta(&tx_data, &mut meta, 20000) {
+                Err(v) => println!("error {:} {:}", v, ts),
+                Ok(_) => println!("success {:}", ts),
+            };
 
             //println!("tx:timestamp:{:} actual_count:{:}", meta.timestamp, meta.actual_count);
 
@@ -401,8 +408,6 @@ fn main() {
                 Ok(_) => break,
                 Err(_) => (),
             };
-
-            meta.flags = 0;
         }
     });
 
@@ -436,21 +441,19 @@ fn main() {
 
     let correlate = FftCorrelate64::new(samps + sample_distance - 1, samps);
 
-    let initial_timestamp = rx_rx.recv().expect("sync tx reply with initial timestamp");
-
     let mut avg_diff = 0f64;
     let mut avg_diff_cnt = 0f64;
 
     let mut cycle = 0usize;
 
-    let avg_buf_lines = 1;
     let mut avg_buf = vec!(0u32; sample_distance * avg_buf_lines);
     let mut avg_buf2 = vec!(0f64; sample_distance * avg_buf_lines);
 
     let mut rng = rand::thread_rng();
 
-    let freq_start = 800e6f64;
-    let freq_end = 6000e6f64;
+    //let mut planner = rustfft::FftPlanner::new();
+    //let fft_forward = planner.plan_fft(samps, rustfft::FftDirection::Forward);
+    //let fft_backward = planner.plan_fft(samps, rustfft::FftDirection::Inverse);
 
     loop {
         let mut rx_datas: Vec<(usize, Vec<Complex<i16>>)> = Vec::new();
@@ -462,10 +465,17 @@ fn main() {
 
         while rx_datas.len() < avg_buf_lines {
             // Clear the buffer.
+            let initial_timestamp = rx_rx.recv().expect("sync tx reply with initial timestamp");
 
             meta = bladerf::Struct_bladerf_metadata::default();
-            meta.flags = bladerf::bladerf_meta_rx::FLAG_RX_NOW as u32;
-            dev_arc.sync_rx_meta(&mut rx_data, &mut meta, 20000).expect("rx sync call [data]");
+            meta.timestamp = initial_timestamp;
+            match dev_arc.sync_rx_meta(&mut rx_data, &mut meta, 20000) {
+                Err(err) => match err {
+                    -14 => continue,
+                    _ => panic!("sync_rx_meta error {:}", err),
+                },
+                Ok(_) => (),
+            }
 
             if meta.actual_count as usize != rx_data.len() {
                 println!("actual:{:} exp:{:}", meta.actual_count, rx_data.len());
@@ -495,6 +505,15 @@ fn main() {
             println!("doing correlations");
             for i in 0..shifted_copies.len() {
                 let ss = &shifted_copies[i];
+                println!("i:{:}/{:}", i, shifted_copies.len() - 1);
+                /*
+                fn phase_shift_signal_by_distance(
+                    sps: f64,
+                    center_freq: f64,
+                    signal_in: &[Complex<f32>],
+                    dist: f64,
+                    wave_velocity: f64) -> Vec<Complex<f64>> {
+                */
 
                 /*let res = correlate.correlate(
                     &rx_signal[best_ndx..best_ndx + samps + sample_distance],
@@ -503,9 +522,43 @@ fn main() {
                 
                 let mut res: Vec<Complex<f64>> = Vec::with_capacity(sample_distance);
                 for u in 0..sample_distance {
+                    let dist = wave_velocity / sps as f64 * u as f64;
+                    /*let shifted_ss = phase_shift_signal_by_distance(
+                        sps as f64, freq, ss, dist, wave_velocity,
+                        &fft_forward, &fft_backward
+                    );*/
+                    let shifted_ss = ss;
+
+                    // https://en.wikipedia.org/wiki/Cross-correlation#Zero-normalized_cross-correlation_(ZNCC)
+                    // I've tried to do the zero-normalized cross-correlation.
+
+                    let mut avg0 = Complex::<f64>::default();
+                    let mut avg1 = Complex::<f64>::default();
+
+                    for w in 0..samps {
+                        avg0 += rx_signal[best_ndx + u + w];
+                        avg1 += shifted_ss[w];
+                    }
+
+                    avg0 /= samps as f64;
+                    avg1 /= samps as f64;
+
+                    let mut sd0 = Complex::<f64>::default();
+                    let mut sd1 = Complex::<f64>::default();
+
+                    for w in 0..samps {
+                        let a = rx_signal[best_ndx + u + w] - avg0;
+                        let b = shifted_ss[w] - avg1;
+                        sd0 += a * a;
+                        sd1 += b * b;
+                    }
+
+                    let sd0f = f64::sqrt((sd0 / samps as f64).norm_sqr());
+                    let sd1f = f64::sqrt((sd1 / samps as f64).norm_sqr());
+    
                     let mut sample = Complex::<f64>::default();
                     for w in 0..samps {
-                        sample += rx_signal[best_ndx + u + w] * ss[w].conj();
+                        sample += 1.0 / (sd0f * sd1f) * (rx_signal[best_ndx + u + w] - avg0) * (shifted_ss[w].conj() - avg1);
                     }
                     res.push(sample / samps as f64);
                 }
